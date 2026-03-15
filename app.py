@@ -3,60 +3,54 @@ import biosteam as bst
 import thermosteam as tmo
 import pandas as pd
 import google.generativeai as genai
+from PIL import Image
 import os
 
 # =================================================================
 # 1. CONFIGURACIÓN DE PÁGINA
 # =================================================================
-st.set_page_config(page_title="BioSTEAM Expert Simulator", layout="wide")
+st.set_page_config(page_title="BioSTEAM Engineering Suite", layout="wide")
 
-# Configuración de la API de Gemini con manejo de errores
+# Configuración de Gemini con manejo de errores
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.warning("⚠️ GEMINI_API_KEY no encontrada en Secrets. El tutor de IA estará desactivado.")
+    st.warning("⚠️ API Key de Gemini no detectada. La sección de IA estará desactivada.")
 
 # =================================================================
-# 2. LÓGICA DE SIMULACIÓN (ENCAPSULADA)
+# 2. MOTOR DE SIMULACIÓN
 # =================================================================
 def ejecutar_simulacion(f_agua, f_etanol, t_entrada):
-    # CRÍTICO: Limpiar el flowsheet para evitar errores de ID duplicado
+    # Limpieza total del flujo de trabajo para evitar IDs duplicados
     bst.main_flowsheet.clear()
     
-    # Configuración Termodinámica
+    # Configuración de componentes
     chemicals = tmo.Chemicals(["Water", "Ethanol"])
     bst.settings.set_thermo(chemicals)
 
-    # Definición de Corrientes
-    mosto = bst.Stream("mosto_entrada",
-                     Water=f_agua, Ethanol=f_etanol, units="kg/hr",
-                     T=t_entrada + 273.15, P=101325)
+    # Corrientes
+    mosto = bst.Stream("1_MOSTO", Water=f_agua, Ethanol=f_etanol, 
+                       units="kg/hr", T=t_entrada + 273.15)
+    
+    vinazas_retorno = bst.Stream("Vinazas_Retorno", Water=200, Ethanol=0, 
+                                 units="kg/hr", T=95 + 273.15, P=300000)
 
-    vinazas_retorno = bst.Stream("vinazas_retorno",
-                               Water=200, Ethanol=0, units="kg/hr",
-                               T=95 + 273.15, P=300000)
-
-    # Selección de Equipos
+    # Equipos
     P100 = bst.Pump("P100", ins=mosto, P=4*101325)
     
-    W210 = bst.HXprocess("W210",
-                       ins=(P100-0, vinazas_retorno),
-                       outs=("mosto_precalentado", "drenaje_vinazas"),
+    W210 = bst.HXprocess("W210", ins=(P100-0, vinazas_retorno),
+                       outs=("3_Mosto_Pre", "Drenaje"),
                        phase0="l", phase1="l")
     W210.outs[0].T = 85 + 273.15
 
-    W220 = bst.HXutility("W220", ins=W210-0, outs="mezcla_caliente", T=92+273.15)
-    
-    V100 = bst.IsenthalpicValve("V100", ins=W220-0, outs="mezcla_bifasica", P=101325)
-    
-    V1 = bst.Flash("V1", ins=V100-0, outs=("vapor_etanol", "vinazas_fondo"), P=101325, Q=0)
-    
-    W310 = bst.HXutility("W310", ins=V1-0, outs="producto_final", T=25 + 273.15)
-    
+    W220 = bst.HXutility("W220", ins=W210-0, outs="Mezcla", T=92+273.15)
+    V100 = bst.IsenthalpicValve("V100", ins=W220-0, outs="Mezcla_Bifasica", P=101325)
+    V1 = bst.Flash("V1", ins=V100-0, outs=("Vapor_caliente", "Vinazas"), P=101325, Q=0)
+    W310 = bst.HXutility("W310", ins=V1-0, outs="Producto_Final", T=25 + 273.15)
     P200 = bst.Pump("P200", ins=V1-1, outs=vinazas_retorno, P=3*101325)
 
-    # Definición del Sistema
-    eth_sys = bst.System("sistema_etanol", path=(P100, W210, W220, V100, V1, W310, P200))
+    # Sistema
+    eth_sys = bst.System("planta_etanol", path=(P100, W210, W220, V100, V1, W310, P200))
     
     try:
         eth_sys.simulate()
@@ -65,88 +59,66 @@ def ejecutar_simulacion(f_agua, f_etanol, t_entrada):
         return None, str(e)
 
 # =================================================================
-# 3. FUNCIONES DE REPORTE
+# 3. INTERFAZ DE USUARIO
 # =================================================================
-def generar_tablas(sistema):
-    datos_mat = []
-    for s in sistema.streams:
-        if s.F_mass > 0:
-            datos_mat.append({
-                "ID Corriente": s.ID,
-                "Temp (°C)": round(s.T - 273.15, 2),
-                "Flujo Total (kg/h)": round(s.F_mass, 2),
-                "Etano (kg/h)": round(s.imass['Ethanol'], 2),
-                "% Etanol": f"{(s.imass['Ethanol']/s.F_mass)*100:.2f}%"
-            })
-    
-    datos_en = []
-    for u in sistema.units:
-        calor_kw = 0.0
-        if hasattr(u, 'heat_utilities') and u.heat_utilities:
-            calor_kw = sum([hu.duty for hu in u.heat_utilities]) / 3600
-        elif isinstance(u, bst.HXprocess):
-            calor_kw = (u.outs[0].H - u.ins[0].H) / 3600
+st.title("🧪 Simulador de Procesos BioSTEAM + AI")
+st.markdown("---")
 
-        if abs(calor_kw) > 0.001:
-            datos_en.append({"Equipo": u.ID, "Carga Térmica (kW)": round(calor_kw, 2)})
+# Barra lateral
+st.sidebar.header("⚙️ Parámetros de Operación")
+f_agua = st.sidebar.slider("Agua en alimentación (kg/h)", 500, 2000, 900)
+f_etanol = st.sidebar.slider("Etanol en alimentación (kg/h)", 10, 500, 100)
+t_entrada = st.sidebar.number_input("Temperatura de Entrada (°C)", value=25)
 
-    return pd.DataFrame(datos_mat), pd.DataFrame(datos_en)
-
-# =================================================================
-# 4. INTERFAZ DE USUARIO (STREAMLIT)
-# =================================================================
-st.title("🧪 Simulador de Separación de Etanol")
-st.markdown("Desarrollado con **BioSTEAM** y analizado por **Gemini IA**.")
-
-with st.sidebar:
-    st.header("⚙️ Parámetros de Proceso")
-    f_agua = st.slider("Flujo de Agua (kg/h)", 500, 2000, 900)
-    f_etanol = st.slider("Flujo de Etanol (kg/h)", 10, 500, 100)
-    t_entrada = st.number_input("Temperatura Entrada (°C)", value=25)
-    btn_simular = st.button("🚀 Ejecutar Simulación", use_container_width=True)
-
-if btn_simular:
+if st.sidebar.button("🚀 Ejecutar Simulación"):
     sys, error = ejecutar_simulacion(f_agua, f_etanol, t_entrada)
     
     if error:
-        st.error(f"Error en la convergencia: {error}")
+        st.error(f"Error en la simulación: {error}")
     else:
-        df_m, df_e = generar_tablas(sys)
+        # Pestañas para organizar info
+        tab1, tab2, tab3 = st.tabs(["📊 Resultados", "🖼️ Diagrama de Proceso", "🤖 Tutor de IA"])
         
-        tab1, tab2, tab3 = st.tabs(["📊 Balances", "📐 Diagrama PFD", "🤖 Tutor IA"])
-        
+        # Procesamiento de datos
+        datos_mat = []
+        for s in sys.streams:
+            if s.F_mass > 0:
+                datos_mat.append({
+                    "Stream": s.ID,
+                    "Temp (°C)": f"{s.T - 273.15:.2f}",
+                    "Flujo (kg/h)": f"{s.F_mass:.2f}",
+                    "EtOH %": f"{(s.imass['Ethanol']/s.F_mass)*100:.1f}%"
+                })
+        df_m = pd.DataFrame(datos_mat)
+
         with tab1:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Balance de Materia**")
-                st.dataframe(df_m, use_container_width=True)
-            with col2:
-                st.write("**Balance de Energía**")
-                st.dataframe(df_e, use_container_width=True)
+            st.subheader("Balance de Materia y Energía")
+            st.table(df_m)
             
         with tab2:
-            st.write("**Diagrama de Flujo del Proceso**")
+            st.subheader("Diagrama de Flujo del Proceso (PFD)")
+            # Guardamos y cargamos manualmente para evitar errores de renderizado de Streamlit
             try:
-                sys.diagram(file="pfd", format="png")
-                st.image("pfd.png")
-            except:
-                st.info("El diagrama se está generando, intenta recargar en un momento.")
+                sys.diagram(file="pfd_output", format="png")
+                image = Image.open("pfd_output.png")
+                st.image(image, caption="PFD Generado por BioSTEAM")
+            except Exception as e:
+                st.warning(f"No se pudo generar el diagrama: {e}")
 
         with tab3:
             if "GEMINI_API_KEY" in st.secrets:
-                with st.spinner("El ingeniero IA está analizando los datos..."):
+                with st.spinner("El Ingeniero IA está analizando los datos..."):
                     model = genai.GenerativeModel('gemini-1.5-flash')
-                    analisis_prompt = f"""
-                    Analiza como ingeniero químico estos resultados de una simulación BioSTEAM:
-                    TABLA DE MATERIA:
+                    prompt = f"""
+                    Eres un Ingeniero de Procesos experto. Analiza estos resultados de una simulación de separación flash:
                     {df_m.to_string()}
                     
-                    TABLA DE ENERGÍA:
-                    {df_e.to_string()}
-                    
-                    ¿Es eficiente la separación en el tanque Flash? ¿Qué recomendarías para mejorar la pureza del etanol en el vapor?
+                    Dime:
+                    1. ¿Es buena la recuperación de etanol en el 'Vapor_caliente'?
+                    2. ¿Ves algún problema térmico o de flujo?
+                    3. Sugerencia técnica para optimizar la pureza.
                     """
-                    response = model.generate_content(analisis_prompt)
-                    st.markdown(response.text)
+                    response = model.generate_content(prompt)
+                    st.write(response.text)
             else:
-                st.error("Configura la API Key para usar esta función.")
+                st.info("Configura tu GEMINI_API_KEY para recibir consejos técnicos.")
