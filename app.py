@@ -127,7 +127,7 @@ if st.sidebar.button("Ejecutar Simulación"):
         st.divider()
         st.subheader("💡 Análisis del Tutor de IA")
         with st.spinner("Consultando a Gemini..."):
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-pro')
             prompt = f"Como ingeniero químico, analiza estos resultados de simulación de una columna flash y dime si la separación es eficiente: {df_m.to_string()}"
             response = model.generate_content(prompt)
             st.write(response.text)
