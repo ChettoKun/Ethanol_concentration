@@ -1,6 +1,7 @@
-biosteam
-thermosteam
+biosteam==2.39.11
+thermosteam==0.42.1
 pandas
-streamlit
+streamlit>=1.31.0
+altair<5.0.0
 google-generativeai
-graphviz  # Necesario para el PFD
+graphviz
