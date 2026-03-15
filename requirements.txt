@@ -1,1 +1,6 @@
-
+biosteam
+thermosteam
+pandas
+streamlit
+google-generativeai
+graphviz  # Necesario para el PFD
